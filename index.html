@@ -756,11 +756,15 @@ async function crearBio() {
     user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'patrimonio', displayName: (S.dash && S.dash.nombre) || 'Patrimonio' },
     pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
     authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' }, timeout: 60000 } });
-  S.lock = { tipo: 'bio', id: b64(cred.rawId) }; save('lock', S.lock);
+  const id = b64(cred.rawId);
+  // Se prueba la llave antes de activar el bloqueo: si el teléfono la guardó en otro lado
+  // (otro gestor de contraseñas, llavero apagado) no se puede usar y dejaría la app trabada.
+  try { await verificarBio(id); } catch (e) { const er = new Error('prueba'); er.prueba = true; throw er; }
+  S.lock = { tipo: 'bio', id }; save('lock', S.lock);
 }
-async function usarBio() {
+async function verificarBio(id) {
   await navigator.credentials.get({ publicKey: { challenge: crypto.getRandomValues(new Uint8Array(32)),
-    allowCredentials: [{ type: 'public-key', id: unb64(S.lock.id) }], userVerification: 'required', timeout: 60000 } });
+    allowCredentials: [{ type: 'public-key', id: unb64(id) }], userVerification: 'required', timeout: 60000 } });
 }
 
 function pantallaBloqueo() {
@@ -770,9 +774,11 @@ function pantallaBloqueo() {
   app.innerHTML = `<div class="center" style="text-align:center"><div class="h1">Patrimonio</div>
     ${esBio ? `<p class="m">Desbloqueá con Face ID o huella.</p><button class="btn" id="ub">Desbloquear</button><div id="lerr"></div>`
       : `<p class="m">Ingresá tu PIN</p><div class="pin">${'<i></i>'.repeat(4)}</div>
-         <div class="pad">${[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map(k => k === '' ? '<span></span>' : `<button data-k="${k}" aria-label="${k === '⌫' ? 'Borrar' : k}">${k}</button>`).join('')}</div><div id="lerr"></div>`}</div>`;
+         <div class="pad">${[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map(k => k === '' ? '<span></span>' : `<button data-k="${k}" aria-label="${k === '⌫' ? 'Borrar' : k}">${k}</button>`).join('')}</div><div id="lerr"></div>`}
+    <button class="lnk" data-act="sinDesbloqueo" style="margin-top:28px">¿No podés desbloquear?</button></div>`;
   if (esBio) {
-    const go = async () => { try { await usarBio(); desbloquear(); } catch (e) { $('#lerr').innerHTML = '<div class="err">No se pudo verificar. Tocá Desbloquear para reintentar.</div>'; } };
+    const go = async () => { try { await verificarBio(S.lock.id); desbloquear(); } catch (e) {
+      $('#lerr').innerHTML = '<div class="err">No se pudo verificar. Tocá Desbloquear para reintentar. Si el teléfono dice que no hay llaves guardadas, usá «¿No podés desbloquear?».</div>'; } };
     $('#ub').onclick = go; go();
   } else {
     app.querySelectorAll('[data-k]').forEach(b => b.onclick = async () => {
@@ -889,7 +895,10 @@ document.addEventListener('click', async e => {
     }
     case 'bloquear': cerrar(); if (S.lock) { S.bloqueado = true; render(); } else configurarBloqueo(); break;
     case 'cambiarBloqueo': configurarBloqueo(); break;
-    case 'lockBio': try { await crearBio(); cerrar(); toast('Face ID o huella activado'); } catch (er) { $('#berr').innerHTML = '<div class="err">No se pudo activar. Probá con un PIN.</div>'; } break;
+    case 'lockBio': try { await crearBio(); cerrar(); toast('Face ID o huella activado'); } catch (er) {
+      $('#berr').innerHTML = er.prueba
+        ? '<div class="err">El Face ID no quedó guardado en este teléfono (pasa si las llaves se guardan en otro gestor, como Chrome). Usá un PIN.</div>'
+        : '<div class="err">No se pudo activar. Probá con un PIN.</div>'; } break;
     case 'lockPin': crearPin(); break;
     case 'guardarPin': {
       const a = $('#pn').value, b = $('#pn2').value;
@@ -898,6 +907,10 @@ document.addEventListener('click', async e => {
       S.lock = { tipo: 'pin', hash: await sha(a) }; save('lock', S.lock); cerrar(); toast('PIN activado'); break;
     }
     case 'lockNo': S.lock = null; save('lock', null); cerrar(); break;
+    case 'sinDesbloqueo':
+      if (!confirm('Se desconecta este dispositivo: se borran la clave, el bloqueo y la copia guardada acá. Tus datos siguen en la planilla. Para volver a entrar vas a necesitar la dirección y la clave.')) return;
+      Object.keys(localStorage).filter(k => k.startsWith(LS)).forEach(k => localStorage.removeItem(k));
+      location.reload(); break;
     case 'desconectar':
       if (!confirm('¿Desconectar este dispositivo? Vas a tener que volver a cargar la clave.')) return;
       Object.keys(localStorage).filter(k => k.startsWith(LS)).forEach(k => localStorage.removeItem(k));
