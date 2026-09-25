@@ -196,28 +196,27 @@ const CASH = ['CASH', 'EFECTIVO', 'PLAZO_FIJO'];
 const PALETA = ['#d9b779', '#7fa6b8', '#9bb89a', '#b8927f', '#a99bc4', '#c4b99b', '#6f8f8a', '#8a8d95'];
 
 /* ================= API ================= */
-async function get(action, params = {}) {
-  if (S.demo) return DEMO.get(action, params);
-  const u = new URL(S.cfg.url);
-  u.searchParams.set('key', S.cfg.key);
-  u.searchParams.set('action', action);
-  Object.keys(params).forEach(k => u.searchParams.set(k, params[k]));
+// Todo va por POST con la clave en el cuerpo, nunca en la URL (text/plain: sin preflight CORS)
+async function llamar(action, data, ms) {
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 30000);
+  const t = setTimeout(() => ctl.abort(), ms);
   try {
-    const r = await fetch(u, { signal: ctl.signal });
+    const r = await fetch(S.cfg.url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ key: S.cfg.key, action, data }), signal: ctl.signal });
     const j = await r.json();
     if (j && j.error) throw new Error(j.error === 'no autorizado' ? 'La clave no es válida.' : j.error);
     return j;
+  } catch (e) {
+    throw e.name === 'AbortError' ? new Error('El servidor tardó demasiado. Probá de nuevo.') : e;
   } finally { clearTimeout(t); }
+}
+async function get(action, params = {}) {
+  if (S.demo) return DEMO.get(action, params);
+  return llamar(action, params, 30000);
 }
 async function post(action, data) {
   if (S.demo) return DEMO.post(action, data);
-  const r = await fetch(S.cfg.url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ key: S.cfg.key, action, data }) });
-  const j = await r.json();
-  if (j && j.error) throw new Error(j.error);
-  return j;
+  return llamar(action, data, 60000);
 }
 
 async function refrescar(silencioso) {
