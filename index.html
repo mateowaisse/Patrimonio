@@ -170,14 +170,15 @@ const fxRef = () => { const d = S.dash; if (!d) return 0; return d.fx.referencia
 function money(usd, o = {}) {
   if (S.ocultar) return '•••••';
   if (usd == null || isNaN(usd)) return '—';
-  const ars = (o.moneda || S.moneda) === 'ARS';
-  const v = ars ? usd * fxRef() : usd;
+  const ars = o.pesos || (o.moneda || S.moneda) === 'ARS';
+  const v = o.pesos ? usd : ars ? usd * fxRef() : usd;
   const sg = o.signo && v > 0.5 ? '+' : v < -0.5 ? '−' : '';
   return sg + (ars ? '$ ' : 'US$ ') + nf(0).format(Math.abs(v));
 }
 const pct = (v, signo = true) => v == null || isNaN(v) ? '—' : (signo && v > 0 ? '+' : v < 0 ? '−' : '') + nf(2).format(Math.abs(v)) + '%';
 const cls = v => v > 0 ? 'up' : v < 0 ? 'dn' : '';
-const qty = (v, d = 2) => S.ocultar ? '•••' : nf(Math.abs(v) >= 1000 ? 0 : d).format(v);
+const tapar = t => S.ocultar ? String(t).replace(/(US\$|\$)\s?[\d.,]+/g, '•••••') : t;
+const qty = (v, d = 2) => S.ocultar ? '•••' : nf(Math.abs(v) >= 1000 || Math.abs(v - Math.round(v)) < 1e-9 ? 0 : d).format(v);
 const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const fecha = s => { if (!s) return '—'; const [y, m, d] = s.slice(0, 10).split('-'); return +d + ' ' + MESES[+m - 1].slice(0, 3) + ' ' + y; };
 const fechaCorta = s => { const [, m, d] = s.slice(0, 10).split('-'); return +d + ' ' + MESES[+m - 1].slice(0, 3); };
@@ -254,13 +255,23 @@ function topbar(titulo) {
 }
 
 /* ================= Pantalla: Hoy ================= */
-function textoDelDia(d) {
-  const t = d.total, v = t.varDiaUsd;
-  if (Math.abs(t.varDiaPct) < 0.05) return 'Día tranquilo: tu patrimonio casi no se movió.';
-  let s = (v > 0 ? 'Subiste ' : 'Bajaste ') + pct(Math.abs(t.varDiaPct), false) + '. ';
+/** Variación del día en la moneda elegida. En pesos la calcula el backend: la suba del dólar suma. */
+function diaEn(d) {
+  const a = S.moneda === 'ARS' && d.total.diaArs;
+  if (a) return { ars: true, v: a.varDia, pct: a.varDiaPct, precio: a.efectoPrecio, fx: a.efectoFx, m: { pesos: true, signo: true } };
+  const t = d.total;
+  return { ars: false, v: t.varDiaUsd, pct: t.varDiaPct, precio: t.efectoPrecioUsd, fx: t.efectoFxUsd, m: { moneda: 'USD', signo: true } };
+}
+function textoDelDia(d, dia) {
+  const v = dia.v;
+  if (Math.abs(dia.pct) < 0.05) return 'Día tranquilo: tu patrimonio casi no se movió.';
+  let s = (v > 0 ? 'Subiste ' : 'Bajaste ') + pct(Math.abs(dia.pct), false) + (dia.ars ? ' en pesos. ' : '. ');
   const m = (d.movers || [])[0];
-  if (m && Math.abs(m.varDiaUsd) > Math.abs(v) * 0.25) s += 'Lo que más pesó fue ' + m.nombre + (m.varDiaUsd * v > 0 ? '' : ', en sentido contrario') + '. ';
-  if (Math.abs(t.efectoFxUsd) > Math.abs(v) * 0.3) s += 'El dólar ' + (t.efectoFxUsd < 0 ? 'subió y restó' : 'bajó y sumó') + ' en tu parte en pesos.';
+  const mv = m ? m.varDiaUsd * (dia.ars ? fxRef() : 1) : 0;
+  if (m && Math.abs(mv) > Math.abs(v) * 0.25) s += 'Lo que más pesó fue ' + m.nombre + (mv * v > 0 ? '' : ', en sentido contrario') + '. ';
+  if (Math.abs(dia.fx) > Math.abs(v) * 0.3) s += dia.ars
+    ? 'El dólar ' + (dia.fx > 0 ? 'subió y sumó' : 'bajó y restó') + ' en lo que tenés en dólares.'
+    : 'El dólar ' + (dia.fx < 0 ? 'subió y restó' : 'bajó y sumó') + ' en tu parte en pesos.';
   return s.trim();
 }
 function vHoy() {
@@ -269,6 +280,7 @@ function vHoy() {
   const nuevos = S.avisos.filter(a => !a.leido);
   const prox = (d.cobros || [])[0];
   const alertas = (d.alertas || []).filter(a => a.tipo !== 'cobro');
+  const dia = diaEn(d);
   return topbar(`<div class="hi">Hola, ${esc(d.nombre || '')}${S.demo ? '<span class="demo">ejemplo</span>' : ''}</div>
       <div class="sub">${S.error ? '<span class="dn">' + esc(S.error) + '</span>' : 'Actualizado ' + hace(d.generado)}</div>`) + `
   <div class="total-l">Patrimonio total</div>
@@ -276,18 +288,18 @@ function vHoy() {
   <div class="total-s"><span>${otra} · ${d.fx.referencia}</span>
     <span class="seg"><button class="${S.moneda === 'USD' ? 'on' : ''}" data-mon="USD">USD</button><button class="${S.moneda === 'ARS' ? 'on' : ''}" data-mon="ARS">ARS</button></span></div>
 
-  ${nuevos.map(a => `<div class="card aviso"><p>${esc(a.texto)}</p><button class="lnk" data-act="leidos">Entendido</button></div>`).join('')}
+  ${nuevos.map(a => `<div class="card aviso"><p>${esc(tapar(a.texto))}</p><button class="lnk" data-act="leidos">Entendido</button></div>`).join('')}
 
   <div class="card">
-    <div class="row"><span class="m" style="font-size:13px">Hoy</span><span class="big ${cls(d.total.varDiaUsd)}">${money(d.total.varDiaUsd, { signo: true })} · ${pct(d.total.varDiaPct)}</span></div>
+    <div class="row"><span class="m" style="font-size:13px">Hoy</span><span class="big ${cls(dia.v)}">${money(dia.v, dia.m)} · ${pct(dia.pct)}</span></div>
     <div class="hr"></div>
-    <div class="row"><span class="t2">Efecto precios</span><span class="${cls(d.total.efectoPrecioUsd)}">${money(d.total.efectoPrecioUsd, { signo: true })}</span></div>
-    <div class="row"><span class="t2">Efecto dólar</span><span class="${cls(d.total.efectoFxUsd)}">${money(d.total.efectoFxUsd, { signo: true })}</span></div>
-    <div class="note">${esc(textoDelDia(d))}</div>
+    <div class="row"><span class="t2">Efecto precios</span><span class="${cls(dia.precio)}">${money(dia.precio, dia.m)}</span></div>
+    <div class="row"><span class="t2">Efecto dólar</span><span class="${cls(dia.fx)}">${money(dia.fx, dia.m)}</span></div>
+    <div class="note">${esc(textoDelDia(d, dia))}</div>
   </div>
 
   ${(d.movers || []).length ? `<div class="card"><h3>Lo que más movió</h3><div class="list">${d.movers.slice(0, 4).map(p => `
-    <button class="it" data-det="${esc(p.id)}"><span><span class="n">${esc(p.nombre)}</span> <span class="s">${esc(p.banco || '')}</span></span>
+    <button class="it" data-det="${esc(p.id)}"><span><span class="n">${esc(p.nombre)}</span> <span class="s">${p.banco && p.banco !== p.nombre ? esc(p.banco) : ''}</span></span>
     <span class="r ${cls(p.varDiaUsd)}">${money(p.varDiaUsd, { signo: true })}</span></button>`).join('')}</div></div>` : ''}
 
   ${prox ? `<button class="card row" style="width:100%;text-align:left;align-items:center" data-tab="bonos">
@@ -398,7 +410,7 @@ function vEvolucion() {
     ${spx.length ? `<path d="${path(spx)}" fill="none" stroke="#7fa6b8" stroke-width="1.5"/>` : ''}
     <path d="${path(cart)}" fill="none" stroke="#d9b779" stroke-width="2"/></svg>`;
   return head + chips + `<div class="card">
-    <div class="row"><span class="m" style="font-size:13px">Tu cartera en el período</span><span class="big ${cls(cart[cart.length - 1])}">${pct(cart[cart.length - 1])}</span></div>
+    <div class="row"><span class="m" style="font-size:13px">Tu cartera en el período${S.moneda === 'ARS' ? ' (en dólares)' : ''}</span><span class="big ${cls(cart[cart.length - 1])}">${pct(cart[cart.length - 1])}</span></div>
     ${svg}
     <div class="legend"><span><i style="background:#d9b779"></i>Tu cartera ${pct(cart[cart.length - 1])}</span>
     ${spx.length ? `<span><i style="background:#7fa6b8"></i>S&P 500 ${pct(spx[spx.length - 1])}</span>` : ''}</div>
@@ -558,13 +570,15 @@ function pasoDatos() {
   const esBono = p ? (p.tipo === 'BONO') : (o.tipo === 'BONO');
   const precio = p ? p.precio : o.precio;
   const banco = p ? p.banco : '';
+  f.moneda = moneda;
   if (f.tipo === 'cobro') {
     return abrir(`<div class="sh-t">Cobré</div><div class="sub">${esc(nombre)}</div>
       <div class="field"><label for="fm">Monto cobrado</label><input id="fm" inputmode="decimal" autocomplete="off"></div>
       <div class="field"><label for="fmo">Moneda</label><select id="fmo"><option ${moneda === 'USD' ? 'selected' : ''}>USD</option><option ${moneda === 'ARS' ? 'selected' : ''}>ARS</option></select></div>
       ${selectCuenta(banco, moneda, 'No quedó en ninguna cuenta', '¿Dónde entró?')}
       <div class="field"><label for="ff">Fecha</label><input id="ff" type="date" value="${hoyISO()}"></div>
-      <button class="btn" data-act="guardar">Guardar cobro</button><div id="ferr"></div>`);
+      ${campoTc()}
+      <button class="btn" data-act="guardar">Guardar cobro</button><div id="ferr"></div>`), enlazarTc();
   }
   abrir(`<div class="sh-t">${f.tipo === 'compra' ? 'Compré' : 'Vendí'}</div><div class="sub">${esc(nombre)}</div>
     ${!p ? `<div class="field"><label for="fb">¿En qué banco?</label><select id="fb">${bancos().map(b => `<option>${esc(b)}</option>`).join('')}<option value="__otro">Otro…</option></select>
@@ -575,7 +589,9 @@ function pasoDatos() {
       <div class="hint">Viene con el precio de mercado. Cambialo si ${f.tipo === 'compra' ? 'pagaste' : 'cobraste'} otro.</div></div>
     <div class="field"><label for="ff">Fecha</label><input id="ff" type="date" value="${hoyISO()}"></div>
     ${selectCuenta(banco, moneda, f.tipo === 'compra' ? 'Plata nueva (aporte)' : 'La retiré del patrimonio', f.tipo === 'compra' ? '¿Con qué plata?' : '¿A dónde fue la plata?')}
+    ${campoTc()}
     <button class="btn" data-act="guardar">Guardar ${f.tipo === 'compra' ? 'compra' : 'venta'}</button><div id="ferr"></div>`);
+  enlazarTc();
   const fb = $('#fb');
   if (fb) fb.onchange = () => { $('#fbo').style.display = fb.value === '__otro' ? 'block' : 'none'; };
 }
@@ -593,19 +609,84 @@ function pasoCaja(id) {
       <div class="field"><label for="nmo">Moneda</label><select id="nmo"><option>USD</option><option>ARS</option></select></div></div>
     <div class="field"><label for="fm">Monto</label><input id="fm" inputmode="decimal" autocomplete="off"></div>
     <div class="field"><label for="ff">Fecha</label><input id="ff" type="date" value="${hoyISO()}"></div>
+    ${campoTc()}
     <button class="btn" data-act="guardar">Guardar</button><div id="ferr"></div>`);
   S.flujo.caja = 'DEPOSITO';
   $('#fc').onchange = () => { $('#nueva').style.display = $('#fc').value === '__nueva' ? 'block' : 'none'; };
   if (!cs.length) { $('#fc').value = '__nueva'; $('#nueva').style.display = 'block'; }
+  enlazarTc();
+}
+
+/* ---------- Dólar del día: aparece solo si hay pesos en juego ---------- */
+function campoTc() {
+  return `<div class="field" id="ftcw" style="display:none"><label for="ftc">Dólar ${esc(S.dash.fx.referencia)} de ese día</label>
+    <input id="ftc" inputmode="decimal" autocomplete="off"><div class="hint" id="ftch"></div></div>`;
+}
+function monedaCuenta() {
+  const c = $('#fc') && $('#fc').value;
+  if (c === '__nueva') return $('#nmo').value;
+  return c ? (cuentas().find(x => x.id === c) || {}).moneda : null;
+}
+function hayPesos() {
+  const f = S.flujo, mc = monedaCuenta();
+  const mon = f.tipo === 'cobro' ? $('#fmo').value : f.tipo === 'caja' ? mc : f.moneda;
+  return mon === 'ARS' || mc === 'ARS';
+}
+async function actualizarTc() {
+  const w = $('#ftcw');
+  if (!w) return;
+  const on = hayPesos();
+  w.style.display = on ? 'block' : 'none';
+  const inp = $('#ftc'), h = $('#ftch');
+  if (!on || inp.dataset.manual) return;
+  const dia = $('#ff').value || hoyISO();
+  w.dataset.pedido = dia;
+  if (dia >= hoyISO()) { inp.value = nf(2).format(fxRef()); h.textContent = 'El de hoy. Cambialo si operaste a otro.'; return; }
+  inp.value = ''; h.textContent = 'Buscando el dólar de esa fecha…';
+  try {
+    const r = await get('tc', { fecha: dia });
+    if (w.dataset.pedido !== dia || inp.dataset.manual) return;
+    if (r && r.tc) { inp.value = nf(2).format(r.tc); h.textContent = 'Cierre del ' + fecha(dia) + '. Cambialo si operaste a otro.'; }
+    else h.textContent = 'No lo encontré: escribilo a mano.';
+  } catch (e) { if (w.dataset.pedido === dia) h.textContent = 'No lo encontré: escribilo a mano.'; }
+}
+function enlazarTc() {
+  ['#ff', '#fc', '#fmo', '#nmo'].forEach(q => { const el = $(q); if (el) el.addEventListener('change', actualizarTc); });
+  $('#ftc').addEventListener('input', e => { e.target.dataset.manual = '1'; $('#ftch').textContent = ''; });
+  // Un aviso viejo (p. ej. saldo negativo de otra cuenta) se borra al cambiar cualquier dato
+  $('#sheetBody').oninput = $('#sheetBody').onchange = () => { const e = $('#ferr'); if (e) e.innerHTML = ''; };
+  actualizarTc();
+}
+/** Saldo que le quedaría a una cuenta después de sacarle `salida` (en `monSalida`). */
+function saldoTras(cuentaId, salida, monSalida, tc) {
+  const cta = cuentas().find(x => x.id === cuentaId);
+  if (!cta) return null;
+  const p = S.dash.posiciones.find(x => x.id === cuentaId);
+  const enCta = monSalida === cta.moneda ? salida : cta.moneda === 'ARS' ? salida * tc : salida / tc;
+  return { cta, queda: (p ? p.cantidad : 0) - enCta };
 }
 
 async function guardar(btn) {
   const f = S.flujo, err = $('#ferr');
-  const fallo = m => { err.innerHTML = `<div class="err">${esc(m)}</div>`; btn.disabled = false; btn.textContent = 'Guardar'; };
+  btn.dataset.txt = btn.dataset.txt || btn.textContent;
+  const fallo = m => { err.innerHTML = `<div class="err">${esc(m)}</div>`; btn.disabled = false; btn.textContent = btn.dataset.txt; };
+  const forzar = f.forzar; f.forzar = false;
+  // Si la cuenta queda en negativo se avisa; se puede guardar igual (puede faltar cargar su saldo)
+  const negativa = (cuentaId, salida, mon) => {
+    const r = !forzar && cuentaId && saldoTras(cuentaId, salida, mon, tc || fxRef());
+    if (!r || r.queda > -0.5) return false;
+    err.innerHTML = `<div class="err">${esc(r.cta.nombre)} quedaría en ${money(r.queda, r.cta.moneda === 'ARS' ? { pesos: true } : { moneda: 'USD' })}.
+      Si todavía no cargaste su saldo, podés guardar igual.<br><button class="lnk" data-act="guardarIgual">Guardar igual</button></div>`;
+    btn.disabled = false; btn.textContent = btn.dataset.txt;
+    return true;
+  };
   btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
+  const conPesos = hayPesos();
+  const tc = conPesos ? numSuelto($('#ftc').value) : undefined;
   try {
     let activoId = f.id, mov;
     const fechaV = $('#ff').value || hoyISO();
+    if (conPesos && !(tc > 0)) return fallo('Ingresá el dólar de ese día.');
     if (f.tipo === 'caja') {
       const monto = numSuelto($('#fm').value);
       if (!(monto > 0)) return fallo('Ingresá un monto mayor a cero.');
@@ -616,16 +697,22 @@ async function guardar(btn) {
         mon = $('#nmo').value;
         const r = await post('crearActivo', { banco, opcion: { nombre, tipo: $('#nt').value, fuente: 'FIJO', moneda: mon, ticker: '', divisor: 1 } });
         cuentaId = r.id; S.activos = null;
-      } else mon = (cuentas().find(c => c.id === cuentaId) || {}).moneda;
-      mov = { tipo: f.caja, activo_id: cuentaId, cantidad: monto, precio: 1, moneda: mon, fecha: fechaV };
+      } else {
+        mon = (cuentas().find(c => c.id === cuentaId) || {}).moneda;
+        if (f.caja === 'RETIRO' && negativa(cuentaId, monto, mon)) return;
+      }
+      mov = { tipo: f.caja, activo_id: cuentaId, cantidad: monto, precio: 1, moneda: mon, tc, fecha: fechaV };
     } else if (f.tipo === 'cobro') {
       const monto = numSuelto($('#fm').value);
       if (!(monto > 0)) return fallo('Ingresá el monto cobrado.');
-      mov = { tipo: 'COBRO', activo_id: activoId, cantidad: monto, moneda: $('#fmo').value, contra_activo: $('#fc').value || '', fecha: fechaV };
+      mov = { tipo: 'COBRO', activo_id: activoId, cantidad: monto, moneda: $('#fmo').value, tc, contra_activo: $('#fc').value || '', fecha: fechaV };
     } else {
       const cant = numSuelto($('#fq').value), precio = numSuelto($('#fp').value);
       if (!(cant > 0)) return fallo('Ingresá una cantidad mayor a cero.');
       if (!(precio > 0)) return fallo('Ingresá el precio.');
+      const div = ((S.activos || []).find(a => a.id === activoId) || f.opcion || {}).divisor
+        || ((S.dash.posiciones.find(x => x.id === activoId) || {}).tipo === 'BONO' ? 100 : 1);
+      if (f.tipo === 'compra' && negativa($('#fc').value, cant * precio / div, f.moneda)) return;
       if (!activoId) {
         let banco = $('#fb').value;
         if (banco === '__otro') banco = $('#fbo').value.trim();
@@ -636,7 +723,7 @@ async function guardar(btn) {
       const p = S.dash.posiciones.find(x => x.id === activoId);
       if (f.tipo === 'venta' && p && cant > p.cantidad + 1e-9) return fallo('Estás vendiendo más de lo que tenés.');
       const moneda = p ? p.moneda : f.opcion.moneda;
-      mov = { tipo: f.tipo === 'compra' ? 'COMPRA' : 'VENTA', activo_id: activoId, cantidad: cant, precio, moneda,
+      mov = { tipo: f.tipo === 'compra' ? 'COMPRA' : 'VENTA', activo_id: activoId, cantidad: cant, precio, moneda, tc,
               contra_activo: $('#fc').value || '', fecha: fechaV };
     }
     const r = await post('movimiento', mov);
@@ -789,6 +876,7 @@ document.addEventListener('click', async e => {
     case 'leidos': S.avisos.forEach(a => a.leido = true); render(); post('leerAvisos', {}).catch(() => {}); break;
     case 'buscar': buscar(); break;
     case 'guardar': guardar(t); break;
+    case 'guardarIgual': S.flujo.forzar = true; guardar($('#sheetBody [data-act=guardar]')); break;
     case 'conciliar': {
       const saldo = numSuelto($('#cs').value);
       if (!(saldo >= 0)) { $('#cres').innerHTML = '<div class="err">Ingresá el saldo.</div>'; return; }
@@ -858,19 +946,31 @@ const DEMO = (() => {
     return Object.keys(g).map(n => ({ nombre: n, usd: g[n], pct: +(g[n] / total * 100).toFixed(2) })).sort((a, b) => b.usd - a.usd); };
   const efP = P.reduce((s, p) => s + (p.moneda === 'ARS' ? p.varDiaUsd + p.valorUsd * 0.004 : p.varDiaUsd), 0);
   const efF = P.filter(p => p.moneda === 'ARS').reduce((s, p) => s - p.valorUsd * 0.004, 0);
+  // Próxima fecha (después de hoy) con ese mes y día
+  const prox = (mes, dia, n = 0) => { let y = +hoy.slice(0, 4); let f;
+    do { f = y + '-' + String(mes).padStart(2, '0') + '-' + String(dia).padStart(2, '0'); y++; } while (f <= hoy);
+    return n ? (+f.slice(0, 4) + n) + f.slice(4) : f; };
+  // Treasury: cupón semestral 15/5 y 15/11 (2,125% × 200.000). GD30: 8% de amortización y 0,75% anual
+  // sobre el residual (250.000 VN originales, 64% residual desde julio 2026).
   const cobros = [
-    { fecha: suma(hoy, 18), activo: 'Treasury Note 4,25% 2030', id: 'UST30', tipo: 'CUPON', usd: 4250 },
-    { fecha: suma(hoy, 106), activo: 'Global 2030', id: 'GD30', tipo: 'AMORTIZACION', usd: 20000 },
-    { fecha: suma(hoy, 106), activo: 'Global 2030', id: 'GD30', tipo: 'CUPON', usd: 660 },
-    { fecha: suma(hoy, 200), activo: 'Treasury Note 4,25% 2030', id: 'UST30', tipo: 'CUPON', usd: 4250 },
-    { fecha: suma(hoy, 287), activo: 'Global 2030', id: 'GD30', tipo: 'AMORTIZACION', usd: 20000 },
-    { fecha: suma(hoy, 287), activo: 'Global 2030', id: 'GD30', tipo: 'CUPON', usd: 1225 }];
+    { fecha: prox(11, 15), activo: 'Treasury Note 4,25% 2030', id: 'UST30', tipo: 'CUPON', usd: 4250 },
+    { fecha: prox(1, 9), activo: 'Global 2030', id: 'GD30', tipo: 'AMORTIZACION', usd: 20000 },
+    { fecha: prox(1, 9), activo: 'Global 2030', id: 'GD30', tipo: 'CUPON', usd: 600 },
+    { fecha: prox(5, 15), activo: 'Treasury Note 4,25% 2030', id: 'UST30', tipo: 'CUPON', usd: 4250 },
+    { fecha: prox(7, 9), activo: 'Global 2030', id: 'GD30', tipo: 'AMORTIZACION', usd: 20000 },
+    { fecha: prox(7, 9), activo: 'Global 2030', id: 'GD30', tipo: 'CUPON', usd: 525 }].sort((a, b) => a.fecha < b.fecha ? -1 : 1);
+  // En pesos: el dólar subió 0,4% en el día (mismo supuesto que el efecto dólar en USD)
+  const mepAyer = mep / 1.004;
+  const usdEnDolares = P.filter(p => p.moneda !== 'ARS').reduce((s, p) => s + p.valorUsd, 0);
+  const diaArs = { efectoPrecio: efP * mep, efectoFx: usdEnDolares * (mep - mepAyer) };
+  diaArs.varDia = diaArs.efectoPrecio + diaArs.efectoFx;
+  diaArs.varDiaPct = diaArs.varDia / (total * mep - diaArs.varDia) * 100;
   const dash = () => ({
     nombre: 'Javier', hoy, generado: new Date().toISOString(),
     fx: { mep, ccl: 1302, oficial: 1250, referencia: 'MEP', estado: 'ok' },
     total: { usd: total, varDiaUsd: efP + efF, varDiaPct: (efP + efF) / total * 100, efectoPrecioUsd: efP, efectoFxUsd: efF,
-             aportesNetosUsd: 1010000, resultadoUsd: total - 1010000 },
-    rendimiento: { d7: 0.62, d30: 1.84, ytd: 6.9, inicio: 8.4 },
+             aportesNetosUsd: 1010000, resultadoUsd: total - 1010000, diaArs },
+    rendimiento: rendDemo(),
     grupos: { banco: grupo('banco'), pais: grupo('pais'), tipo: grupo('tipo'), moneda: grupo('moneda') },
     posiciones: P, movers: P.filter(p => p.varDiaUsd).sort((a, b) => Math.abs(b.varDiaUsd) - Math.abs(a.varDiaUsd)).slice(0, 5),
     bonos: [
@@ -879,20 +979,29 @@ const DEMO = (() => {
     cobros, cobros12mUsd: cobros.reduce((s, c) => s + c.usd, 0), cobradoUltimos12mUsd: 47800,
     alertas: [{ nivel: 'aviso', tipo: 'concentracion', texto: 'Los bonos son el 29% de tu patrimonio' }]
   });
-  const evo = () => {
+  // Serie fija (azar con semilla): el gráfico no cambia al recargar y los rendimientos salen de ella
+  const serieDemo = (() => {
+    let x = 7; const azar = () => (x = (x * 16807) % 2147483647) / 2147483647;
     const serie = []; let c = 100, s = 6200, m = 1150;
-    for (let i = 240; i >= 0; i--) {
-      c *= 1 + (Math.sin(i / 9) * 0.002 + 0.00035 + (Math.random() - 0.5) * 0.004);
-      s *= 1 + (Math.sin(i / 7) * 0.003 + 0.0004 + (Math.random() - 0.5) * 0.008);
-      m *= 1 + 0.0005 + (Math.random() - 0.5) * 0.003;
+    for (let i = 400; i >= 0; i--) {
+      c *= 1 + (Math.sin(i / 9) * 0.002 + 0.00035 + (azar() - 0.5) * 0.004);
+      s *= 1 + (Math.sin(i / 7) * 0.003 + 0.0004 + (azar() - 0.5) * 0.008);
+      m *= 1 + 0.0005 + (azar() - 0.5) * 0.003;
       serie.push({ fecha: suma(hoy, -i), cartera: c, spx: s, mep: m, usd: 0 });
     }
-    return { serie, rendimiento: dash().rendimiento, aportesNetosUsd: 1010000, resultadoUsd: total - 1010000 };
-  };
+    return serie;
+  })();
+  function rendDemo() {
+    const ult = serieDemo[serieDemo.length - 1].cartera;
+    const desde = f => { const b = serieDemo.filter(p => p.fecha <= f).pop() || serieDemo[0]; return +((ult / b.cartera - 1) * 100).toFixed(2); };
+    return { d7: desde(suma(hoy, -7)), d30: desde(suma(hoy, -30)), ytd: desde(hoy.slice(0, 4) + '-01-01'), inicio: desde('0000') };
+  }
+  const evo = () => ({ serie: serieDemo, rendimiento: rendDemo(), aportesNetosUsd: 1010000, resultadoUsd: total - 1010000 });
   const wait = v => new Promise(r => setTimeout(() => r(v), 350));
   return {
     dash,
-    get: (a, p) => wait(a === 'dashboard' ? dash() : a === 'avisos' ? [{ id: 'a1', texto: 'Entró el cupón del Treasury 2030: US$ 4.250 en Cuenta IDB.', leido: false }]
+    get: (a, p) => wait(a === 'dashboard' ? dash() : a === 'avisos' ? [{ id: 'a1', texto: 'Entró el dividendo de SPDR S&P 500 ETF: US$ 455 en Cuenta IDB.', leido: false }]
+      : a === 'tc' ? { fecha: p.fecha, tc: p.fecha >= hoy ? mep : Math.round(mep * 0.97), referencia: 'MEP', fuente: 'ejemplo' }
       : a === 'evolucion' ? evo() : a === 'activos' ? P.map(x => ({ id: x.id, nombre: x.nombre, tipo: x.tipo, moneda: x.moneda, banco: x.banco }))
       : a === 'movimientos' ? [{ id: 'd1', fecha: '2026-09-01', tipo: 'COMPRA', activo_id: p.activo, cantidad: 100, precio: 98.5, origen: 'app' }]
       : a === 'buscar' ? { opciones: [{ nombre: String(p.q).toUpperCase(), tipo: 'ACCION', ticker: String(p.q).toUpperCase(), fuente: 'GOOGLEFINANCE', moneda: 'USD', divisor: 1, precio: 100, detalle: 'Ejemplo: en la versión real busca en los mercados' }] } : null),
